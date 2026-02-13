@@ -1,4 +1,4 @@
-# TransUNet
+# TransUNet - This project is based on the Beckschen/TransUNet repository and aims to educate and research, focusing on artificial intelligence (AI) applications in healthcare.
 This repo holds code for [TransUNet: Transformers Make Strong Encoders for Medical Image Segmentation](https://arxiv.org/pdf/2102.04306.pdf)
 
 ## 📰 News
