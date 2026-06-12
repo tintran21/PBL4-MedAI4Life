@@ -1,0 +1,484 @@
+import argparse
+import logging
+import os
+import glob 
+import random
+import numpy as np
+import torch
+import torch.backends.cudnn as cudnn
+from collections import OrderedDict
+
+from networks.vit_seg_modeling import VisionTransformer as ViT_seg
+from networks.vit_seg_modeling import CONFIGS as CONFIGS_ViT_seg
+from trainer import trainer_synapse
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--root_path', type=str,
+                    default='../data/Synapse/train_npz', help='root dir for data')
+parser.add_argument('--dataset', type=str,
+                    default='Synapse', help='experiment_name')
+parser.add_argument('--list_dir', type=str,
+                    default='./lists/lists_Synapse', help='list dir')
+parser.add_argument('--num_classes', type=int,
+                    default=9, help='output channel of network')
+parser.add_argument('--max_iterations', type=int,
+                    default=30000, help='maximum epoch number to train')
+parser.add_argument('--max_epochs', type=int,
+                    default=150, help='maximum epoch number to train')
+parser.add_argument('--batch_size', type=int,
+                    #default=24, help='batch_size per gpu')
+                    default=12, help='batch_size per gpu')
+parser.add_argument('--n_gpu', type=int, default=1, help='total gpu')
+parser.add_argument('--deterministic', type=int,  default=1,
+                    help='whether use deterministic training')
+parser.add_argument('--base_lr', type=float, default=0.002, #default=0.01, 
+                    help='segmentation network learning rate')
+parser.add_argument('--img_size', type=int,
+                    default=224, help='input patch size of network input')
+parser.add_argument('--seed', type=int,
+                    default=1234, help='random seed')
+parser.add_argument('--n_skip', type=int,
+                    default=3, help='using number of skip-connect, default is num')
+parser.add_argument('--vit_name', type=str,
+                    default='R50-ViT-B_16', help='select one vit model')
+parser.add_argument('--vit_patches_size', type=int,
+                    default=16, help='vit_patches_size, default is 16')
+args = parser.parse_args()
+
+
+if __name__ == "__main__":
+
+    if not args.deterministic:
+        cudnn.benchmark = True
+        cudnn.deterministic = False
+    else:
+        cudnn.benchmark = False
+        cudnn.deterministic = True
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+
+    dataset_name = args.dataset
+    dataset_config = {
+        'Synapse': {
+            'root_path': '/content/drive/MyDrive/project_TransUNet/data/Synapse/train_npz',
+            'list_dir': '/content/drive/MyDrive/project_TransUNet/TransUNet/lists/lists_Synapse',
+            'num_classes': 9,
+        },
+    }
+
+    #if args.batch_size != 24 and args.batch_size % 6 == 0:
+    #    args.base_lr *= args.batch_size / 24
+
+    args.num_classes = dataset_config[dataset_name]['num_classes']
+    args.root_path = dataset_config[dataset_name]['root_path']
+    args.list_dir = dataset_config[dataset_name]['list_dir']
+    args.is_pretrain = True
+
+    args.exp = 'TU_' + dataset_name + str(args.img_size)
+    snapshot_path = "../model/{}/{}".format(args.exp, 'TU')
+    snapshot_path = snapshot_path + '_pretrain' if args.is_pretrain else snapshot_path
+    snapshot_path += '_' + args.vit_name
+    snapshot_path = snapshot_path + '_skip' + str(args.n_skip)
+    snapshot_path = snapshot_path + '_vitpatch' + str(args.vit_patches_size) if args.vit_patches_size != 16 else snapshot_path
+    snapshot_path = snapshot_path + '_' + str(args.max_iterations)[0:2] + 'k' if args.max_iterations != 30000 else snapshot_path
+    snapshot_path = snapshot_path + '_epo' + str(args.max_epochs) if args.max_epochs != 30 else snapshot_path
+    snapshot_path = snapshot_path + '_bs' + str(args.batch_size)
+    snapshot_path = snapshot_path + '_lr' + str(args.base_lr) if args.base_lr != 0.01 else snapshot_path
+    snapshot_path = snapshot_path + '_' + str(args.img_size)
+    snapshot_path = snapshot_path + '_s' + str(args.seed) if args.seed != 1234 else snapshot_path
+
+    if not os.path.exists(snapshot_path):
+        os.makedirs(snapshot_path)
+
+    print("Snapshot path:", snapshot_path)
+
+    config_vit = CONFIGS_ViT_seg[args.vit_name]
+    config_vit.n_classes = args.num_classes
+    config_vit.n_skip = args.n_skip
+
+    if args.vit_name.find('R50') != -1:
+        config_vit.patches.grid = (
+            int(args.img_size / args.vit_patches_size),
+            int(args.img_size / args.vit_patches_size)
+        )
+
+    net = ViT_seg(config_vit, img_size=args.img_size,
+                  num_classes=config_vit.n_classes).cuda()
+
+    # ================= RESUME SECTION =================
+
+    # resume_path = "/content/drive/MyDrive/project_TransUNet/model/TU_Synapse224/TU_pretrain_R50-ViT-B_16_skip3_epo150_bs8_224/epoch_99.pth"
+
+    # checkpoint = None
+    # start_epoch = 0
+
+    # if os.path.exists(resume_path):
+    #     print("Loading checkpoint from:", resume_path)
+
+    #     loaded_checkpoint = torch.load(resume_path, map_location='cuda')
+
+    #     # ===== FULL CHECKPOINT =====
+    #     if isinstance(loaded_checkpoint, dict) and 'model_state_dict' in loaded_checkpoint:
+    #         print("Full checkpoint detected")
+    #         state_dict = loaded_checkpoint['model_state_dict']
+    #         start_epoch = loaded_checkpoint.get('epoch', 0) + 1
+    #         checkpoint = loaded_checkpoint  # chỉ khi có optimizer mới truyền xuống trainer
+
+    #     # ===== OLD STYLE (WEIGHTS ONLY) =====
+    #     else:
+    #         print("Old-style checkpoint detected (weights only)")
+    #         state_dict = loaded_checkpoint
+    #         start_epoch = 100   # vì đang resume từ epoch_99
+    #         checkpoint = None   # ⚠ QUAN TRỌNG: không truyền xuống trainer
+
+    #     new_state_dict = OrderedDict()
+    #     for k, v in state_dict.items():
+    #         if k.startswith("module."):
+    #             new_state_dict[k[7:]] = v
+    #         else:
+    #             new_state_dict[k] = v
+
+    #     net.load_state_dict(new_state_dict)
+
+    #     print(f"Checkpoint loaded successfully! Resuming from epoch {start_epoch}")
+
+    # else:
+    #     print("No checkpoint found. Loading ImageNet pretrained weights.")
+    #     net.load_from(weights=np.load(config_vit.pretrained_path))
+
+    # ===================================================
+
+
+    # ================= RESUME SECTION =================
+    checkpoint = None
+    start_epoch = 0
+
+    # Tự động quét thư mục snapshot_path để tìm file epoch lớn nhất
+    pth_files = glob.glob(os.path.join(snapshot_path, "epoch_*.pth"))
+    
+    if pth_files:
+        epochs = []
+        for file_path in pth_files:
+            try:
+                filename = os.path.basename(file_path)
+                epoch_str = filename.replace('epoch_', '').replace('.pth', '')
+                epochs.append((int(epoch_str), file_path))
+            except ValueError:
+                continue 
+        
+        if epochs:
+            epochs.sort(key=lambda x: x[0])
+            resume_path = epochs[-1][1]
+            
+            print("Loading checkpoint from:", resume_path)
+            loaded_checkpoint = torch.load(resume_path, map_location='cuda')
+
+            if isinstance(loaded_checkpoint, dict) and 'model_state_dict' in loaded_checkpoint:
+                print("Full checkpoint detected")
+                state_dict = loaded_checkpoint['model_state_dict']
+                start_epoch = loaded_checkpoint.get('epoch', 0) + 1
+                checkpoint = loaded_checkpoint 
+            else:
+                print("Old-style checkpoint detected (weights only)")
+                state_dict = loaded_checkpoint
+                start_epoch = epochs[-1][0] + 1
+                checkpoint = None  
+
+            new_state_dict = OrderedDict()
+            for k, v in state_dict.items():
+                if k.startswith("module."):
+                    new_state_dict[k[7:]] = v
+                else:
+                    new_state_dict[k] = v
+
+            net.load_state_dict(new_state_dict)
+            print(f"Checkpoint loaded successfully! Resuming from epoch {start_epoch}")
+        else:
+            print("No valid checkpoint files found. Loading ImageNet pretrained weights.")
+            net.load_from(weights=np.load(config_vit.pretrained_path))
+    else:
+        print("No checkpoint found. Loading ImageNet pretrained weights.")
+        net.load_from(weights=np.load(config_vit.pretrained_path))
+
+    trainer = {'Synapse': trainer_synapse}
+    trainer['Synapse'](args, net, snapshot_path, start_epoch, checkpoint)
+
+
+
+
+
+
+
+
+
+
+
+# import argparse
+# import logging
+# import os
+# import random
+# import numpy as np
+# import torch
+# import torch.backends.cudnn as cudnn
+# from collections import OrderedDict
+
+# from networks.vit_seg_modeling import VisionTransformer as ViT_seg
+# from networks.vit_seg_modeling import CONFIGS as CONFIGS_ViT_seg
+# from trainer import trainer_synapse
+
+# parser = argparse.ArgumentParser()
+# parser.add_argument('--root_path', type=str,
+#                     default='../data/Synapse/train_npz', help='root dir for data')
+# parser.add_argument('--dataset', type=str,
+#                     default='Synapse', help='experiment_name')
+# parser.add_argument('--list_dir', type=str,
+#                     default='./lists/lists_Synapse', help='list dir')
+# parser.add_argument('--num_classes', type=int,
+#                     default=9, help='output channel of network')
+# parser.add_argument('--max_iterations', type=int,
+#                     default=30000, help='maximum epoch number to train')
+# parser.add_argument('--max_epochs', type=int,
+#                     default=150, help='maximum epoch number to train')
+# parser.add_argument('--batch_size', type=int,
+#                     default=24, help='batch_size per gpu')
+# parser.add_argument('--n_gpu', type=int, default=1, help='total gpu')
+# parser.add_argument('--deterministic', type=int,  default=1,
+#                     help='whether use deterministic training')
+# parser.add_argument('--base_lr', type=float,  default=0.01,
+#                     help='segmentation network learning rate')
+# parser.add_argument('--img_size', type=int,
+#                     default=224, help='input patch size of network input')
+# parser.add_argument('--seed', type=int,
+#                     default=1234, help='random seed')
+# parser.add_argument('--n_skip', type=int,
+#                     default=3, help='using number of skip-connect, default is num')
+# parser.add_argument('--vit_name', type=str,
+#                     default='R50-ViT-B_16', help='select one vit model')
+# parser.add_argument('--vit_patches_size', type=int,
+#                     default=16, help='vit_patches_size, default is 16')
+# args = parser.parse_args()
+
+
+# if __name__ == "__main__":
+
+#     if not args.deterministic:
+#         cudnn.benchmark = True
+#         cudnn.deterministic = False
+#     else:
+#         cudnn.benchmark = False
+#         cudnn.deterministic = True
+
+#     random.seed(args.seed)
+#     np.random.seed(args.seed)
+#     torch.manual_seed(args.seed)
+#     torch.cuda.manual_seed(args.seed)
+
+#     dataset_name = args.dataset
+#     dataset_config = {
+#         'Synapse': {
+#             'root_path': '/content/drive/MyDrive/project_TransUNet/data/Synapse/train_npz',
+#             'list_dir': '/content/drive/MyDrive/project_TransUNet/TransUNet/lists/lists_Synapse',
+#             'num_classes': 9,
+#         },
+#     }
+
+#     if args.batch_size != 24 and args.batch_size % 6 == 0:
+#         args.base_lr *= args.batch_size / 24
+
+#     args.num_classes = dataset_config[dataset_name]['num_classes']
+#     args.root_path = dataset_config[dataset_name]['root_path']
+#     args.list_dir = dataset_config[dataset_name]['list_dir']
+#     args.is_pretrain = True
+
+#     args.exp = 'TU_' + dataset_name + str(args.img_size)
+#     snapshot_path = "../model/{}/{}".format(args.exp, 'TU')
+#     snapshot_path = snapshot_path + '_pretrain' if args.is_pretrain else snapshot_path
+#     snapshot_path += '_' + args.vit_name
+#     snapshot_path = snapshot_path + '_skip' + str(args.n_skip)
+#     snapshot_path = snapshot_path + '_vitpatch' + str(args.vit_patches_size) if args.vit_patches_size != 16 else snapshot_path
+#     snapshot_path = snapshot_path + '_' + str(args.max_iterations)[0:2] + 'k' if args.max_iterations != 30000 else snapshot_path
+#     snapshot_path = snapshot_path + '_epo' + str(args.max_epochs) if args.max_epochs != 30 else snapshot_path
+#     snapshot_path = snapshot_path + '_bs' + str(args.batch_size)
+#     snapshot_path = snapshot_path + '_lr' + str(args.base_lr) if args.base_lr != 0.01 else snapshot_path
+#     snapshot_path = snapshot_path + '_' + str(args.img_size)
+#     snapshot_path = snapshot_path + '_s' + str(args.seed) if args.seed != 1234 else snapshot_path
+
+#     if not os.path.exists(snapshot_path):
+#         os.makedirs(snapshot_path)
+
+#     print("Snapshot path:", snapshot_path)
+
+#     config_vit = CONFIGS_ViT_seg[args.vit_name]
+#     config_vit.n_classes = args.num_classes
+#     config_vit.n_skip = args.n_skip
+
+#     if args.vit_name.find('R50') != -1:
+#         config_vit.patches.grid = (
+#             int(args.img_size / args.vit_patches_size),
+#             int(args.img_size / args.vit_patches_size)
+#         )
+
+#     net = ViT_seg(config_vit, img_size=args.img_size,
+#                   num_classes=config_vit.n_classes).cuda()
+
+#     # ================= RESUME SECTION =================
+
+#     resume_path = "/content/drive/MyDrive/project_TransUNet/model/TU_Synapse224/TU_pretrain_R50-ViT-B_16_skip3_epo150_bs8_224/epoch_99.pth"
+
+#     checkpoint = None
+#     start_epoch = 0
+
+#     if os.path.exists(resume_path):
+#         print("Loading checkpoint from:", resume_path)
+
+#         loaded_checkpoint = torch.load(resume_path, map_location='cuda')
+
+#         # ===== FULL CHECKPOINT =====
+#         if isinstance(loaded_checkpoint, dict) and 'model_state_dict' in loaded_checkpoint:
+#             print("Full checkpoint detected")
+#             state_dict = loaded_checkpoint['model_state_dict']
+#             start_epoch = loaded_checkpoint.get('epoch', 0) + 1
+#             checkpoint = loaded_checkpoint  # chỉ khi có optimizer mới truyền xuống trainer
+
+#         # ===== OLD STYLE (WEIGHTS ONLY) =====
+#         else:
+#             print("Old-style checkpoint detected (weights only)")
+#             state_dict = loaded_checkpoint
+#             start_epoch = 100   # vì đang resume từ epoch_99
+#             checkpoint = None   # ⚠ QUAN TRỌNG: không truyền xuống trainer
+
+#         new_state_dict = OrderedDict()
+#         for k, v in state_dict.items():
+#             if k.startswith("module."):
+#                 new_state_dict[k[7:]] = v
+#             else:
+#                 new_state_dict[k] = v
+
+#         net.load_state_dict(new_state_dict)
+
+#         print(f"Checkpoint loaded successfully! Resuming from epoch {start_epoch}")
+
+#     else:
+#         print("No checkpoint found. Loading ImageNet pretrained weights.")
+#         net.load_from(weights=np.load(config_vit.pretrained_path))
+
+#     # ===================================================
+
+#     trainer = {'Synapse': trainer_synapse}
+#     trainer['Synapse'](args, net, snapshot_path, start_epoch, checkpoint)
+
+
+
+
+
+
+
+
+# import argparse
+# import logging
+# import os
+# import random
+# import numpy as np
+# import torch
+# import torch.backends.cudnn as cudnn
+# from networks.vit_seg_modeling import VisionTransformer as ViT_seg
+# from networks.vit_seg_modeling import CONFIGS as CONFIGS_ViT_seg
+# from trainer import trainer_synapse
+
+# parser = argparse.ArgumentParser()
+# parser.add_argument('--root_path', type=str,
+#                     default='../data/Synapse/train_npz', help='root dir for data')
+# parser.add_argument('--dataset', type=str,
+#                     default='Synapse', help='experiment_name')
+# parser.add_argument('--list_dir', type=str,
+#                     default='./lists/lists_Synapse', help='list dir')
+# parser.add_argument('--num_classes', type=int,
+#                     default=9, help='output channel of network')
+# parser.add_argument('--max_iterations', type=int,
+#                     default=30000, help='maximum epoch number to train')
+# parser.add_argument('--max_epochs', type=int,
+#                     default=150, help='maximum epoch number to train')
+# parser.add_argument('--batch_size', type=int,
+#                     default=24, help='batch_size per gpu')
+# parser.add_argument('--n_gpu', type=int, default=1, help='total gpu')
+# parser.add_argument('--deterministic', type=int,  default=1,
+#                     help='whether use deterministic training')
+# parser.add_argument('--base_lr', type=float,  default=0.01,
+#                     help='segmentation network learning rate')
+# parser.add_argument('--img_size', type=int,
+#                     default=224, help='input patch size of network input')
+# parser.add_argument('--seed', type=int,
+#                     default=1234, help='random seed')
+# parser.add_argument('--n_skip', type=int,
+#                     default=3, help='using number of skip-connect, default is num')
+# parser.add_argument('--vit_name', type=str,
+#                     default='R50-ViT-B_16', help='select one vit model')
+# parser.add_argument('--vit_patches_size', type=int,
+#                     default=16, help='vit_patches_size, default is 16')
+# args = parser.parse_args()
+
+
+# if __name__ == "__main__":
+#     if not args.deterministic:
+#         cudnn.benchmark = True
+#         cudnn.deterministic = False
+#     else:
+#         cudnn.benchmark = False
+#         cudnn.deterministic = True
+
+#     random.seed(args.seed)
+#     np.random.seed(args.seed)
+#     torch.manual_seed(args.seed)
+#     torch.cuda.manual_seed(args.seed)
+#     dataset_name = args.dataset
+#     dataset_config = {
+#     'Synapse': {
+#         'root_path': '/content/drive/MyDrive/project_TransUNet/data/Synapse/train_npz',
+#         'list_dir': '/content/drive/MyDrive/project_TransUNet/TransUNet/lists/lists_Synapse',
+#         'num_classes': 9,
+#     },
+# }
+
+#     if args.batch_size != 24 and args.batch_size % 6 == 0:
+#         args.base_lr *= args.batch_size / 24
+#     args.num_classes = dataset_config[dataset_name]['num_classes']
+#     args.root_path = dataset_config[dataset_name]['root_path']
+#     args.list_dir = dataset_config[dataset_name]['list_dir']
+#     args.is_pretrain = True
+#     args.exp = 'TU_' + dataset_name + str(args.img_size)
+#     snapshot_path = "../model/{}/{}".format(args.exp, 'TU')
+#     snapshot_path = snapshot_path + '_pretrain' if args.is_pretrain else snapshot_path
+#     snapshot_path += '_' + args.vit_name
+#     snapshot_path = snapshot_path + '_skip' + str(args.n_skip)
+#     snapshot_path = snapshot_path + '_vitpatch' + str(args.vit_patches_size) if args.vit_patches_size!=16 else snapshot_path
+#     snapshot_path = snapshot_path+'_'+str(args.max_iterations)[0:2]+'k' if args.max_iterations != 30000 else snapshot_path
+#     snapshot_path = snapshot_path + '_epo' +str(args.max_epochs) if args.max_epochs != 30 else snapshot_path
+#     snapshot_path = snapshot_path+'_bs'+str(args.batch_size)
+#     snapshot_path = snapshot_path + '_lr' + str(args.base_lr) if args.base_lr != 0.01 else snapshot_path
+#     snapshot_path = snapshot_path + '_'+str(args.img_size)
+#     snapshot_path = snapshot_path + '_s'+str(args.seed) if args.seed!=1234 else snapshot_path
+
+#     if not os.path.exists(snapshot_path):
+#         os.makedirs(snapshot_path)
+#     config_vit = CONFIGS_ViT_seg[args.vit_name]
+#     config_vit.n_classes = args.num_classes
+#     config_vit.n_skip = args.n_skip
+#     if args.vit_name.find('R50') != -1:
+#         config_vit.patches.grid = (int(args.img_size / args.vit_patches_size), int(args.img_size / args.vit_patches_size))
+
+#     net = ViT_seg(config_vit, img_size=args.img_size, num_classes=config_vit.n_classes).cuda()
+#     resume_path = "/content/drive/MyDrive/project_TransUNet/model/TU_Synapse224/TU_pretrain_R50-ViT-B_16_skip3_epo150_bs8_224/epoch_99.pth"
+
+#     # if os.path.exists(resume_path):
+#     #   print("Loading checkpoint from:", resume_path)
+#     #   checkpoint = torch.load(resume_path)
+#     #   net.load_state_dict(checkpoint['model'])
+#     #   print("Checkpoint loaded successfully!")
+
+#     net.load_from(weights=np.load(config_vit.pretrained_path))
+
+#     trainer = {'Synapse': trainer_synapse,}
+#     trainer[dataset_name](args, net, snapshot_path)
