@@ -103,9 +103,10 @@ mv {MODEL_NAME}.npz \
 
 ## 3. Dataset Preparation
 
-All datasets are publicly available. Please use the preprocessed **BTCV (Synapse)** dataset and the **ACDC** dataset.
+All data are available so no need to send emails for data. Please use the [BTCV preprocessed data](https://drive.google.com/drive/folders/1ACJEoTp-uqfFJ73qS3eUObQh52nGuzCd?usp=sharing) and [ACDC data](https://drive.google.com/drive/folders/1KQcrci7aKsYZi1hQoZ3T3QUtcy7b--n4?usp=drive_link).
 
-### Google Colab Workflow
+
+### Google Colab Workflow (Optional)
 
 1. Download the dataset `.zip` files to your local computer.
 2. Upload the `.zip` files to your personal Google Drive.
@@ -114,6 +115,7 @@ All datasets are publicly available. Please use the preprocessed **BTCV (Synapse
 5. Open the code inside either:
    - `/TransUNet_DatasetSynapse`
    - `/TransUNet_DatasetACDC`
+   - ...(customize)
 
 **Important:**  
 Modify all dataset paths and directory configurations inside Python scripts to match your Google Drive directory before training or testing.
@@ -126,29 +128,13 @@ Navigate to the desired dataset directory before running commands.
 
 ### Training
 
-The batch size can be reduced to `12` or `6` to save GPU memory. When reducing batch size, the `base_lr` should also be decreased linearly.
-
-Example:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 python train.py \
---dataset Synapse \
---vit_name R50-ViT-B_16
-```
+The training parameters (e.g., batch size, learning rate, and number of epochs) can be adjusted according to the experiment objectives and available hardware resources.
 
 ---
 
 ### Testing
 
 The testing script supports both 2D slices and 3D volumes.
-
-Example:
-
-```bash
-python test.py \
---dataset Synapse \
---vit_name R50-ViT-B_16
-```
 
 **Note:** Change the `--dataset` argument when using the ACDC directory.
 
